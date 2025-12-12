@@ -36,8 +36,8 @@ sudo rm -rf /etc/kibana*
 echo "=== Cleaning up package system ==="
 sudo apt-get autoremove -y
 sudo apt-get clean
-sudo rm -f /etc/apt/sources.list.d/wazuh.list 2>/dev/null
-sudo rm -f /usr/share/keyrings/wazuh-archive-keyring.gpg 2>/dev/null
+sudo rm -f /etc/apt/sources.list.d/wazuh.list
+sudo rm -f /usr/share/keyrings/wazuh-archive-keyring.gpg
 
 echo "=== Updating system and installing prerequisites ==="
 sudo apt-get update
@@ -72,7 +72,6 @@ echo "=== Installing Wazuh Dashboard ==="
 curl -s https://packages.wazuh.com/4.x/wazuh-dashboard.sh | sudo bash
 
 echo "=== Configuring Dashboard credentials ==="
-# Set default admin credentials for dashboard
 sudo sed -i 's|#enabled: true|enabled: true|g' /etc/wazuh-dashboard/opensearch_dashboards.yml
 sudo sed -i '23s|#password: admin|password: admin|g' /etc/wazuh-dashboard/opensearch_dashboards.yml
 sudo sed -i '22s|#username: kibanaserver|username: kibanaserver|g' /etc/wazuh-dashboard/opensearch_dashboards.yml
