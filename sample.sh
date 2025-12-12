@@ -1,50 +1,52 @@
 #!/bin/bash
 
-echo "=== Downloading Wazuh certificate tool and config.yml ==="
-curl -sO https://packages.wazuh.com/4.14/wazuh-certs-tool.sh
-curl -sO https://packages.wazuh.com/4.14/config.yml
+echo "=== Stopping indexer & dashboard services ==="
+systemctl stop wazuh-indexer 2>/dev/null
+systemctl stop wazuh-dashboard 2>/dev/null
 
-chmod +x wazuh-certs-tool.sh
+echo "=== Removing indexer & dashboard packages ONLY ==="
+apt purge -y wazuh-indexer wazuh-dashboard
+apt autoremove -y
+apt clean
 
-echo "=== Writing your custom config.yml ==="
+echo "=== Removing leftover indexer & dashboard directories ==="
+rm -rf /usr/share/wazuh-indexer
+rm -rf /usr/share/wazuh-dashboard
+rm -rf /etc/wazuh-indexer
+rm -rf /etc/wazuh-dashboard
+rm -rf /var/lib/wazuh-indexer
+rm -rf /var/log/wazuh-indexer
+rm -rf /var/log/wazuh-dashboard
+rm -rf /etc/filebeat
+
+echo "=== Downloading Wazuh installation assistant ==="
+curl -sO https://packages.wazuh.com/4.9/wazuh-install.sh
+curl -sO https://packages.wazuh.com/4.9/config.yml
+
+echo "=== Writing single-node config.yml (manager already exists) ==="
 cat <<EOF > config.yml
 nodes:
-  # Wazuh indexer node
   indexer:
     - name: node-1
-      ip: "10.10.10.10"
+      ip: "10.10.10.112"
 
-  # Wazuh manager node
   server:
     - name: wazuh-1
-      ip: "10.10.10.20"
+      ip: "10.10.10.112"   # manager already installed
 
-  # Wazuh dashboard node
   dashboard:
     - name: dashboard
-      ip: "10.10.10.30"
+      ip: "10.10.10.112"
 EOF
 
-echo "=== Generating certificates with wazuh-certs-tool.sh ==="
-bash ./wazuh-certs-tool.sh -A
+echo "=== Setting permissions ==="
+chmod 755 wazuh-install.sh
 
-echo "=== Compressing generated certificates ==="
-tar -cvf ./wazuh-certificates.tar -C ./wazuh-certificates/ .
+echo "=== Installing certificates ==="
+./wazuh-install.sh --generate-certs
 
-echo "=== Cleaning temporary folder ==="
-rm -rf ./wazuh-certificates
+echo "=== Installing ONLY indexer & dashboard ==="
+./wazuh-install.sh --only-indexer --only-dashboard
 
-echo
-echo "======================================================="
-echo " WAZUH CERTIFICATE GENERATION COMPLETED SUCCESSFULLY "
-echo "======================================================="
-echo
-echo "Generated file: wazuh-certificates.tar"
-echo "Copy this file to:"
-echo "  → 10.10.10.10 (indexer)"
-echo "  → 10.10.10.20 (wazuh-manager)"
-echo "  → 10.10.10.30 (dashboard)"
-echo
-echo "Use this command:"
-echo "scp wazuh-certificates.tar root@<IP>:/root/"
-echo
+echo "=== Done! ==="
+echo "Access Dashboard at: https://10.10.10.112"
