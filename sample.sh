@@ -1,49 +1,62 @@
 #!/bin/bash
-# Wazuh Installation Continuation (Manager already running)
+# Wazuh Indexer & Dashboard Installation Script
+# Run this after Wazuh Manager is already installed and running
+
 set -e
 
-echo "=== INSTALLATION CONTINUATION ==="
-echo "Starting from Wazuh Indexer installation..."
+echo "=== WAZUH INSTALLATION CONTINUATION ==="
+echo "Starting at: $(date)"
+
+# Check if running as root
+if [ "$EUID" -ne 0 ]; then 
+    echo "Please run with sudo"
+    exit 1
+fi
 
 echo "=== Installing Wazuh Indexer ==="
 apt-get install -y wazuh-indexer
 
-echo "=== Generating certificates for Wazuh Indexer ==="
-# Generate certificates BEFORE running security init
-/usr/share/wazuh-indexer/bin/indexer-security-certificates/generate-certificates.sh
-
-echo "=== Initializing Wazuh Indexer security ==="
-# Initialize security with the generated certificates
-JAVA_HOME=/usr/share/wazuh-indexer/jdk sudo -u wazuh-indexer /usr/share/wazuh-indexer/plugins/opensearch-security/tools/securityadmin.sh \
-  -cd /usr/share/wazuh-indexer/plugins/opensearch-security/securityconfig/ \
-  -cacert /etc/wazuh-indexer/certs/root-ca.pem \
-  -cert /etc/wazuh-indexer/certs/admin.pem \
-  -key /etc/wazuh-indexer/certs/admin-key.pem \
-  -h 127.0.0.1 -p 9200 -icl -nhnv
-
-echo "=== Starting Wazuh Indexer ==="
+echo "=== Starting Indexer without custom certificates ==="
+echo "Letting Wazuh use its default self-signed certificates..."
 systemctl enable --now wazuh-indexer
 
-echo "=== Waiting for Indexer to be ready (30 seconds) ==="
+echo "=== Waiting for Indexer to initialize (30 seconds) ==="
 sleep 30
 
 echo "=== Verifying Indexer is running ==="
-if curl -k -s https://localhost:9200 >/dev/null 2>&1; then
-    echo "✅ Wazuh Indexer is running and accessible"
+if systemctl is-active --quiet wazuh-indexer; then
+    echo "✅ Wazuh Indexer service is active"
 else
-    echo "⚠️  Indexer might still be starting, continuing anyway..."
-    echo "Trying to start again..."
-    systemctl restart wazuh-indexer
-    sleep 10
+    echo "❌ Wazuh Indexer failed to start"
+    echo "Checking status..."
+    systemctl status wazuh-indexer --no-pager
+    exit 1
 fi
+
+echo "=== Testing Indexer connection ==="
+echo "Waiting for port 9200 to open..."
+for i in {1..10}; do
+    if curl -k -s https://localhost:9200 >/dev/null 2>&1; then
+        echo "✅ Indexer is responding on port 9200"
+        break
+    fi
+    echo -n "."
+    sleep 5
+done
 
 echo "=== Installing Wazuh Dashboard ==="
 curl -s https://packages.wazuh.com/4.x/wazuh-dashboard.sh | bash
 
-echo "=== Configuring Dashboard ==="
-# Configure dashboard to connect to Indexer
+echo "=== Configuring Dashboard to use insecure connection ==="
 DASH_CONFIG="/etc/wazuh-dashboard/opensearch_dashboards.yml"
-cat > "$DASH_CONFIG" << EOF
+
+# Backup original config if it exists
+if [ -f "$DASH_CONFIG" ]; then
+    mv "$DASH_CONFIG" "$DASH_CONFIG.backup_$(date +%Y%m%d_%H%M%S)"
+fi
+
+# Create new configuration
+cat > "$DASH_CONFIG" << 'EOF'
 # OpenSearch connection
 opensearch.hosts: https://localhost:9200
 opensearch.ssl.verificationMode: none
@@ -54,18 +67,27 @@ opensearch.requestHeadersWhitelist: ["authorization", "securitytenant"]
 # Server configuration
 server.host: "0.0.0.0"
 server.port: 5601
+server.maxPayloadBytes: 1048576
 
-# Security
+# Security configuration
 opensearch_security.multitenancy.enabled: true
 opensearch_security.multitenancy.tenants.preferred: ["Private", "Global"]
 opensearch_security.readonly_mode.roles: ["kibana_read_only"]
 opensearch_security.cookie.secure: false
 
-# Telemetry
+# Telemetry and features
 newsfeed.enabled: false
 telemetry.optIn: false
 telemetry.enabled: false
+savedObjects.maxImportPayloadBytes: 10485760
+
+# Wazuh specific
+wazuh.security.enabled: false
 EOF
+
+echo "=== Setting correct permissions ==="
+chown wazuh-dashboard:wazuh-dashboard "$DASH_CONFIG"
+chmod 640 "$DASH_CONFIG"
 
 echo "=== Starting Wazuh Dashboard ==="
 systemctl enable --now wazuh-dashboard
@@ -74,29 +96,28 @@ echo "=== Waiting for Dashboard to start (40 seconds) ==="
 sleep 40
 
 echo "=== FINAL VERIFICATION ==="
-echo "1. Wazuh Manager status:"
-systemctl is-active wazuh-manager && echo "✅ Active" || echo "❌ Not active"
+echo "1. Service Status:"
+echo "   - Wazuh Manager: $(systemctl is-active wazuh-manager 2>/dev/null || echo 'Not found')"
+echo "   - Wazuh Indexer: $(systemctl is-active wazuh-indexer)"
+echo "   - Wazuh Dashboard: $(systemctl is-active wazuh-dashboard)"
 
-echo -e "\n2. Wazuh Indexer status:"
-systemctl is-active wazuh-indexer && echo "✅ Active" || echo "❌ Not active"
-
-echo -e "\n3. Wazuh Dashboard status:"
-systemctl is-active wazuh-dashboard && echo "✅ Active" || echo "❌ Not active"
-
-echo -e "\n4. Checking open ports:"
-for port in 1514 9200 5601; do
+echo -e "\n2. Open Ports:"
+PORTS=(1514 9200 5601)
+for port in "${PORTS[@]}"; do
     if ss -tlnp | grep -q ":$port "; then
-        echo "✅ Port $port is open"
+        echo "   ✅ Port $port is listening"
     else
-        echo "❌ Port $port is NOT open"
+        echo "   ❌ Port $port is NOT listening"
     fi
 done
 
-echo -e "\n5. Testing Dashboard connectivity:"
+echo -e "\n3. Testing Dashboard connection:"
 if curl -k -s https://localhost:5601 >/dev/null 2>&1; then
-    echo "✅ Dashboard is responding"
+    echo "   ✅ Dashboard is responding"
 else
-    echo "⚠️  Dashboard not responding yet (may need more time)"
+    echo "   ⚠️  Dashboard not responding yet (may need more time)"
+    echo "   Checking dashboard logs..."
+    journalctl -u wazuh-dashboard --no-pager | tail -10
 fi
 
 echo ""
@@ -104,14 +125,19 @@ echo "================================================"
 echo "✅ INSTALLATION COMPLETE!"
 echo "================================================"
 echo ""
-echo "ACCESS YOUR DASHBOARD:"
-echo "URL: https://$(hostname -I | awk '{print $1}'):5601"
-echo "Username: admin"
-echo "Password: admin"
+echo "YOUR DASHBOARD IS READY AT:"
+echo "   URL: https://$(hostname -I | awk '{print $1}'):5601"
+echo "   Username: admin"
+echo "   Password: admin"
 echo ""
-echo "If you cannot connect:"
-echo "1. Wait 1-2 minutes for full initialization"
-echo "2. Check logs: sudo journalctl -u wazuh-dashboard -f"
-echo "3. Check firewall: sudo ufw allow 5601/tcp"
-echo "4. Restart dashboard: sudo systemctl restart wazuh-dashboard"
+echo "TROUBLESHOOTING COMMANDS:"
+echo "   Check all services: sudo systemctl status wazuh-manager wazuh-indexer wazuh-dashboard"
+echo "   Check dashboard logs: sudo journalctl -u wazuh-dashboard -f"
+echo "   Restart dashboard: sudo systemctl restart wazuh-dashboard"
+echo ""
+echo "Note: If you can't connect immediately, wait 1-2 minutes and refresh."
 echo "================================================"
+
+echo -e "\n=== Checking logs for errors ==="
+echo "Recent dashboard errors (if any):"
+journalctl -u wazuh-dashboard --since "1 minute ago" | grep -i error | tail -5 || echo "No recent errors found"
